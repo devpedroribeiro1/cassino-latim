@@ -1,43 +1,182 @@
 import { useState, useRef, useEffect } from "react";
 import Head from "next/head";
 
-const NAMES = ["Pedro", "Sarah", "Davi", "Kira", "Gustavo", "Nathally"];
-const ACTIVITIES = [
-  "Conversação 1",
-  "Conversação 2",
-  "Tradução",
-  "Diagramação",
-  "Vocabulário",
-  "Gramática",
+const PARTICIPANTS = [
+  { id: "pedro", name: "Pedro" },
+  { id: "sarah", name: "Sarah" },
+  { id: "davi", name: "Davi" },
+  { id: "kira", name: "Kira" },
+  { id: "gustavo", name: "Gustavo" },
+  { id: "nathally", name: "Nathally" },
 ];
-const REEL_HEIGHT = 480;
-const SLOT_HEIGHT = REEL_HEIGHT / NAMES.length; // 80px each
+const MODALITIES = [
+  {
+    id: "conversacao",
+    name: "Conversação",
+    activities: ["Conversação 1", "Conversação 2"],
+  },
+  { id: "traducao", name: "Tradução", activities: ["Tradução"] },
+  { id: "diagramacao", name: "Diagramação", activities: ["Diagramação"] },
+  { id: "vocabulario", name: "Vocabulário", activities: ["Vocabulário"] },
+  { id: "gramatica", name: "Gramática", activities: ["Gramática"] },
+];
+const SLOT_HEIGHT = 80;
 const SESSION_KEY = "activity-assignments";
-const FM_KEY = "activity-fm"; // friendly-friend mode flag
+const SETTINGS_KEY = "activity-customization";
+
+function emptySlots(count) {
+  return Array(count).fill("—");
+}
+
+function activeOptions(options, selectedIds) {
+  return options.filter((option) => selectedIds.includes(option.id));
+}
+
+function activityNames(modalities) {
+  return modalities.flatMap(({ activities }) => activities);
+}
+
+function selectionRespectsModalityGroups(selectedActivities, modalities) {
+  return modalities.every(({ activities }) => {
+    const selectedCount = activities.filter((activity) =>
+      selectedActivities.includes(activity)
+    ).length;
+    return selectedCount === 0 || selectedCount === activities.length;
+  });
+}
+
+function hasValidActivitySelection(modalities, participantCount) {
+  let possibleCounts = new Set([0]);
+
+  modalities.forEach(({ activities }) => {
+    const countsWithThisModality = [...possibleCounts].map(
+      (count) => count + activities.length
+    );
+    possibleCounts = new Set([...possibleCounts, ...countsWithThisModality]);
+  });
+
+  return possibleCounts.has(participantCount);
+}
+
+function defaultSettings() {
+  return {
+    participantIds: PARTICIPANTS.map(({ id }) => id),
+    modalityIds: MODALITIES.map(({ id }) => id),
+  };
+}
+
+function hasValidIds(ids, options) {
+  return (
+    Array.isArray(ids) &&
+    new Set(ids).size === ids.length &&
+    ids.every((id) => options.some((option) => option.id === id))
+  );
+}
+
+function sameIds(first, second) {
+  return (
+    Array.isArray(first) &&
+    Array.isArray(second) &&
+    first.length === second.length && first.every((id, index) => id === second[index])
+  );
+}
+
+// Use rejection sampling so every index has exactly the same probability.
+// This keeps every possible one-to-one assignment equally likely.
+function getRandomIndex(max) {
+  if (!Number.isInteger(max) || max <= 0 || max > 0x100000000) {
+    throw new RangeError("max must be an integer between 1 and 2^32");
+  }
+
+  const limit = 0x100000000 - (0x100000000 % max);
+  const value = new Uint32Array(1);
+
+  do {
+    crypto.getRandomValues(value);
+  } while (value[0] >= limit);
+
+  return value[0] % max;
+}
 
 function shuffle(arr) {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = getRandomIndex(i + 1);
     [a[i], a[j]] = [a[j], a[i]];
   }
   return a;
 }
 
 // ── Helpers for sessionStorage (no libraries) ──────────────────
-function loadSession() {
+function isCompleteAssignment(text, settled, participants, modalities) {
+  const activities = activityNames(modalities);
+  return (
+    Array.isArray(text) &&
+    text.length === participants.length &&
+    Array.isArray(settled) &&
+    settled.length === participants.length &&
+    settled.every(Boolean) &&
+    text.every((activity) => activities.includes(activity)) &&
+    new Set(text).size === text.length &&
+    selectionRespectsModalityGroups(text, modalities)
+  );
+}
+
+function loadSettings() {
   try {
-    const raw = sessionStorage.getItem(SESSION_KEY);
-    if (!raw) return null;
-    return JSON.parse(raw); // { text: string[], settled: bool[] }
+    const raw = sessionStorage.getItem(SETTINGS_KEY);
+    if (!raw) return defaultSettings();
+    const saved = JSON.parse(raw);
+    if (
+      saved &&
+      hasValidIds(saved.participantIds, PARTICIPANTS) &&
+      hasValidIds(saved.modalityIds, MODALITIES)
+    ) {
+      return saved;
+    }
+    sessionStorage.removeItem(SETTINGS_KEY);
   } catch {
-    return null;
+    /* storage unavailable or malformed */
+  }
+  return defaultSettings();
+}
+
+function saveSettings(settings) {
+  try {
+    sessionStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  } catch {
+    /* quota exceeded or private mode — silently ignore */
   }
 }
 
-function saveSession(text, settled) {
+function loadSession(settings) {
   try {
-    sessionStorage.setItem(SESSION_KEY, JSON.stringify({ text, settled }));
+    const raw = sessionStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    const saved = JSON.parse(raw);
+    const participants = activeOptions(PARTICIPANTS, settings.participantIds);
+    const modalities = activeOptions(MODALITIES, settings.modalityIds);
+    if (
+      saved &&
+      sameIds(saved.participantIds, settings.participantIds) &&
+      sameIds(saved.modalityIds, settings.modalityIds) &&
+      isCompleteAssignment(saved.text, saved.settled, participants, modalities)
+    ) {
+      return saved;
+    }
+    sessionStorage.removeItem(SESSION_KEY);
+  } catch {
+    /* storage unavailable or malformed */
+  }
+  return null;
+}
+
+function saveSession(text, settled, settings) {
+  try {
+    sessionStorage.setItem(
+      SESSION_KEY,
+      JSON.stringify({ ...settings, text, settled })
+    );
   } catch {
     /* quota exceeded or private mode — silently ignore */
   }
@@ -51,143 +190,216 @@ function clearSession() {
   }
 }
 
-function loadFM() {
-  try {
-    const stored = sessionStorage.getItem(FM_KEY);
-    return stored === null ? true : stored === "true"; // default ON
-  } catch {
-    return true;
-  }
-}
-function saveFM(val) {
-  try {
-    sessionStorage.setItem(FM_KEY, String(val));
-  } catch {
-    /* ignore */
-  }
-}
-
 export default function Home() {
-  // Lazy initialisers read sessionStorage once on first render (SSR-safe)
-  const [displayedText, setDisplayedText] = useState(() => {
-    const saved = loadSession();
-    return saved ? saved.text : Array(6).fill("—");
-  });
-  const [settledSlots, setSettledSlots] = useState(() => {
-    const saved = loadSession();
-    return saved ? saved.settled : Array(6).fill(false);
-  });
-  const [spinningSlots, setSpinningSlots] = useState(Array(6).fill(false));
+  // Keep the server and first browser render identical. Saved settings are
+  // applied after mount so sessionStorage cannot cause a hydration mismatch.
+  const [settings, setSettings] = useState(defaultSettings);
+  const [displayedText, setDisplayedText] = useState(() =>
+    emptySlots(PARTICIPANTS.length)
+  );
+  const [settledSlots, setSettledSlots] = useState(() =>
+    Array(PARTICIPANTS.length).fill(false)
+  );
+  const [spinningSlots, setSpinningSlots] = useState(
+    Array(PARTICIPANTS.length).fill(false)
+  );
   const [buttonPressed, setButtonPressed] = useState(false);
   const [clearPressed, setClearPressed] = useState(false);
-  const [friendlyMode, setFriendlyMode] = useState(() => loadFM());
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [customizeOpen, setCustomizeOpen] = useState(false);
   const intervalsRef = useRef([]);
-  const menuRef = useRef(null);
+  const timeoutsRef = useRef([]);
+  const spinningSlotsRef = useRef(Array(PARTICIPANTS.length).fill(false));
+  const isSpinningRef = useRef(false);
+  const customizeRef = useRef(null);
+  const activeParticipants = activeOptions(PARTICIPANTS, settings.participantIds);
+  const activeModalities = activeOptions(MODALITIES, settings.modalityIds);
+  const activeActivities = activityNames(activeModalities);
+  const canDraw =
+    activeParticipants.length > 0 &&
+    activeParticipants.length <= activeActivities.length &&
+    hasValidActivitySelection(activeModalities, activeParticipants.length);
 
-  // Persist to sessionStorage whenever a settled result changes
   useEffect(() => {
-    if (settledSlots.some(Boolean)) {
-      saveSession(displayedText, settledSlots);
+    const savedSettings = loadSettings();
+    const savedSession = loadSession(savedSettings);
+    const participantCount = savedSettings.participantIds.length;
+
+    setSettings(savedSettings);
+    setDisplayedText(
+      savedSession ? savedSession.text : emptySlots(participantCount)
+    );
+    setSettledSlots(
+      savedSession
+        ? savedSession.settled
+        : Array(participantCount).fill(false)
+    );
+    setSpinningSlots(Array(participantCount).fill(false));
+    spinningSlotsRef.current = Array(participantCount).fill(false);
+  }, []);
+
+  // Store only completed draws. Saving an animation frame could restore
+  // temporary, repeated labels as though they were a finished result.
+  useEffect(() => {
+    if (
+      isCompleteAssignment(
+        displayedText,
+        settledSlots,
+        activeParticipants,
+        activeModalities
+      )
+    ) {
+      saveSession(displayedText, settledSlots, settings);
     }
-  }, [displayedText, settledSlots]);
+  }, [displayedText, settledSlots, settings]);
 
-  // Close menu when clicking outside
+  // Do not leave animation work running if this page is unmounted.
   useEffect(() => {
-    if (!menuOpen) return;
-    const handler = (e) => {
-      if (menuRef.current && !menuRef.current.contains(e.target)) {
-        setMenuOpen(false);
+    return () => {
+      intervalsRef.current.forEach(clearInterval);
+      timeoutsRef.current.forEach(clearTimeout);
+      isSpinningRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!customizeOpen) return undefined;
+    const closeOnOutsideClick = (event) => {
+      if (customizeRef.current && !customizeRef.current.contains(event.target)) {
+        setCustomizeOpen(false);
       }
     };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [menuOpen]);
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    return () => document.removeEventListener("mousedown", closeOnOutsideClick);
+  }, [customizeOpen]);
+
+  const resetDraw = (participantCount) => {
+    clearSession();
+    intervalsRef.current.forEach(clearInterval);
+    timeoutsRef.current.forEach(clearTimeout);
+    intervalsRef.current = [];
+    timeoutsRef.current = [];
+    isSpinningRef.current = false;
+    spinningSlotsRef.current = Array(participantCount).fill(false);
+    setDisplayedText(emptySlots(participantCount));
+    setSettledSlots(Array(participantCount).fill(false));
+    setSpinningSlots(Array(participantCount).fill(false));
+  };
+
+  const toggleSetting = (settingKey, id) => {
+    if (isSpinningRef.current) return;
+
+    const selectedIds = settings[settingKey];
+    const nextSettings = {
+      ...settings,
+      [settingKey]: selectedIds.includes(id)
+        ? selectedIds.filter((selectedId) => selectedId !== id)
+        : [...selectedIds, id],
+    };
+    setSettings(nextSettings);
+    saveSettings(nextSettings);
+    resetDraw(nextSettings.participantIds.length);
+  };
 
   const go = () => {
-    if (spinningSlots.some(Boolean)) return;
+    // A ref closes the small window before React has painted the disabled UI.
+    if (isSpinningRef.current || !canDraw) return;
+    isSpinningRef.current = true;
 
     setButtonPressed(true);
     setTimeout(() => setButtonPressed(false), 150);
 
-    // ── Friendly Friend Mode ──────────────────────────────────────
-    // NAMES order: Pedro(0) Sarah(1) Davi(2) Kira(3) Gustavo(4) Nathally(5)
     let result;
-    if (friendlyMode) {
-      const convos = shuffle(["Conversação 1", "Conversação 2"]); // Davi & Gustavo
-      const rest = shuffle(["Tradução", "Diagramação", "Gramática"]); // others
-      result = [
-        "Vocabulário", // Pedro  — always
-        rest[0], // Sarah  — random from rest
-        convos[0], // Davi   — one of the Conversações
-        rest[1], // Kira   — random from rest
-        convos[1], // Gustavo — other Conversação
-        rest[2], // Nathally — random from rest
-      ];
-    } else {
-      result = shuffle(ACTIVITIES);
-    }
-    // ─────────────────────────────────────────────────────────────
+    do {
+      result = shuffle(activeActivities).slice(0, activeParticipants.length);
+    } while (!selectionRespectsModalityGroups(result, activeModalities));
+    const allSpinning = Array(activeParticipants.length).fill(true);
 
-    setSpinningSlots(Array(6).fill(true));
-    setSettledSlots(Array(6).fill(false));
-    setDisplayedText(Array(6).fill("—"));
+    // An unfinished draw must never be restored after a refresh.
+    clearSession();
+
+    spinningSlotsRef.current = allSpinning;
+    setSpinningSlots(allSpinning);
+    setSettledSlots(Array(activeParticipants.length).fill(false));
+    setDisplayedText(shuffle(result));
 
     intervalsRef.current.forEach(clearInterval);
     intervalsRef.current = [];
+    timeoutsRef.current.forEach(clearTimeout);
+    timeoutsRef.current = [];
+
+    const interval = setInterval(() => {
+      const spinningIndexes = spinningSlotsRef.current
+        .map((isSpinning, index) => (isSpinning ? index : null))
+        .filter((index) => index !== null);
+
+      if (spinningIndexes.length === 0) return;
+
+      // The active rows display a shuffled set of only their remaining
+      // activities, so the screen is always a one-to-one assignment.
+      const remainingActivities = shuffle(
+        spinningIndexes.map((index) => result[index])
+      );
+      setDisplayedText((prev) => {
+        const next = [...prev];
+        spinningIndexes.forEach((index, position) => {
+          next[index] = remainingActivities[position];
+        });
+        return next;
+      });
+    }, 65);
+    intervalsRef.current = [interval];
 
     result.forEach((finalActivity, i) => {
-      let tick = 0;
-      const interval = setInterval(() => {
-        tick++;
-        setDisplayedText((prev) => {
-          const next = [...prev];
-          next[i] = ACTIVITIES[tick % ACTIVITIES.length];
-          return next;
-        });
-      }, 65);
-      intervalsRef.current[i] = interval;
-
       const stopDelay = 1200 + i * 380;
-      setTimeout(() => {
-        clearInterval(interval);
+      const timeout = setTimeout(() => {
+        spinningSlotsRef.current = spinningSlotsRef.current.map(
+          (isSpinning, index) => (index === i ? false : isSpinning)
+        );
         setDisplayedText((prev) => {
           const next = [...prev];
           next[i] = finalActivity;
           return next;
         });
-        setSpinningSlots((prev) => {
-          const next = [...prev];
-          next[i] = false;
-          return next;
-        });
+        setSpinningSlots([...spinningSlotsRef.current]);
         setSettledSlots((prev) => {
           const next = [...prev];
           next[i] = true;
           return next;
         });
+
+        if (!spinningSlotsRef.current.some(Boolean)) {
+          clearInterval(interval);
+          intervalsRef.current = [];
+          isSpinningRef.current = false;
+        }
       }, stopDelay);
+      timeoutsRef.current[i] = timeout;
     });
   };
 
   const clearAll = () => {
-    if (isAnySpinning) return;
+    if (isSpinningRef.current) return;
     setClearPressed(true);
     setTimeout(() => setClearPressed(false), 150);
-    clearSession();
-    intervalsRef.current.forEach(clearInterval);
-    setDisplayedText(Array(6).fill("—"));
-    setSettledSlots(Array(6).fill(false));
-    setSpinningSlots(Array(6).fill(false));
-  };
-
-  const toggleFriendlyMode = () => {
-    const next = !friendlyMode;
-    setFriendlyMode(next);
-    saveFM(next);
+    resetDraw(activeParticipants.length);
   };
 
   const isAnySpinning = spinningSlots.some(Boolean);
+  const hasCompletedDraw =
+    settledSlots.length > 0 && settledSlots.every(Boolean);
+  const configurationMessage =
+    activeParticipants.length === 0
+      ? "Ative pelo menos um participante para sortear."
+      : activeModalities.length === 0
+        ? "Ative pelo menos uma modalidade para sortear."
+        : activeParticipants.length > activeActivities.length
+          ? "Ative mais modalidades ou menos participantes para poder realizar o sorteio."
+          : !hasValidActivitySelection(
+                activeModalities,
+                activeParticipants.length
+              )
+            ? "Conversação ocupa duas vagas: ajuste os participantes ou as modalidades."
+          : null;
 
   return (
     <>
@@ -215,12 +427,18 @@ export default function Home() {
         </header>
 
         {/* ── Main layout ── */}
-        <main className="layout">
+        <main
+          className="layout"
+          aria-busy={isAnySpinning}
+          style={{
+            height: `${Math.max(activeParticipants.length, 1) * SLOT_HEIGHT}px`,
+          }}
+        >
           {/* Left: Names */}
           <div className="names-col">
-            {NAMES.map((name, i) => (
+            {activeParticipants.map(({ id, name }, i) => (
               <div
-                key={name}
+                key={id}
                 className={[
                   "name-card",
                   spinningSlots[i] ? "name-spinning" : "",
@@ -235,8 +453,8 @@ export default function Home() {
 
           {/* Middle: Arrow connectors */}
           <div className="connectors">
-            {NAMES.map((_, i) => (
-              <div key={i} className="conn-row">
+            {activeParticipants.map(({ id }, i) => (
+              <div key={id} className="conn-row">
                 <div
                   className={`conn-line ${settledSlots[i] ? "conn-lit" : ""}`}
                 />
@@ -266,9 +484,9 @@ export default function Home() {
               <div className="shade shade-bot" />
               <div className="scanlines" />
 
-              {NAMES.map((_, i) => (
+              {activeParticipants.map(({ id }, i) => (
                 <div
-                  key={i}
+                  key={id}
                   className={[
                     "reel-slot",
                     i > 0 ? "slot-sep" : "",
@@ -295,21 +513,25 @@ export default function Home() {
         <div className="btn-area">
           <div className="btn-row">
             <button
+              type="button"
               className={[
                 "go-btn",
                 buttonPressed ? "btn-pressed" : "",
-                isAnySpinning ? "btn-disabled" : "",
+                isAnySpinning || !canDraw ? "btn-disabled" : "",
               ].join(" ")}
               onClick={go}
-              disabled={isAnySpinning}
-              onMouseDown={() => !isAnySpinning && setButtonPressed(true)}
+              disabled={isAnySpinning || !canDraw}
+              onMouseDown={() =>
+                !isAnySpinning && canDraw && setButtonPressed(true)
+              }
               onMouseUp={() => setButtonPressed(false)}
               onMouseLeave={() => setButtonPressed(false)}
             >
-              Go!
+              Sortear
             </button>
 
             <button
+              type="button"
               className={[
                 "clear-btn",
                 clearPressed ? "btn-pressed" : "",
@@ -321,44 +543,93 @@ export default function Home() {
               onMouseUp={() => setClearPressed(false)}
               onMouseLeave={() => setClearPressed(false)}
             >
-              Clear
+              Limpar
             </button>
           </div>
-          {isAnySpinning && <p className="hint">Sorteando…</p>}
+          <p className="hint" role="status">
+            {configurationMessage
+              ? configurationMessage
+              : isAnySpinning
+              ? "Sorteando…"
+              : hasCompletedDraw
+                ? "Sorteio concluído."
+                : "Clique em Sortear para começar."}
+          </p>
         </div>
 
-        {/* ── Three-dots settings menu ── */}
-        <div className="menu-anchor" ref={menuRef}>
+        <div className="customize-anchor" ref={customizeRef}>
           <button
-            className={`dots-btn ${menuOpen ? "dots-open" : ""} ${friendlyMode ? "dots-ffm" : ""}`}
-            onClick={() => setMenuOpen((o) => !o)}
-            aria-label="Configurações"
-            title="Configurações"
+            type="button"
+            className={`customize-btn ${customizeOpen ? "customize-btn-open" : ""}`}
+            onClick={() => setCustomizeOpen((isOpen) => !isOpen)}
+            aria-expanded={customizeOpen}
+            aria-controls="customize-panel"
           >
-            <span className="dot" />
-            <span className="dot" />
-            <span className="dot" />
-            {friendlyMode && <span className="ffm-badge" />}
+            Personalizar
           </button>
 
-          {menuOpen && (
-            <div className="menu-panel">
-              <p className="menu-section-label">Configurações</p>
-
-              <div className="menu-item" onClick={toggleFriendlyMode}>
-                <div className="menu-item-info">
-                  <span className="menu-item-title">Friendly Friend Mode</span>
-                  <span className="menu-item-desc">
-                    Look, if you had one shot or one opportunity To seize
-                    everything you ever wanted in one moment Would you capture
-                    it or just let it slip?
+          {customizeOpen && (
+            <section
+              id="customize-panel"
+              className="customize-panel"
+              aria-label="Personalizar sorteio"
+            >
+              <div className="customize-heading">
+                <p>Personalizar sorteio</p>
+                <span>
+                  {activeParticipants.length} participante
+                  {activeParticipants.length === 1 ? "" : "s"} · {" "}
+                  {activeModalities.length} modalidade
+                  {activeModalities.length === 1 ? "" : "s"} · {" "}
+                  {activeActivities.length} atividade
+                  {activeActivities.length === 1 ? "" : "s"}
+                  <span className="activity-info">
+                    <span className="info-icon" aria-hidden="true">
+                      i
+                    </span>
+                    <span
+                      id="activity-info-tooltip"
+                      role="tooltip"
+                      className="activity-tooltip"
+                    >
+                      Conversação é uma modalidade que conta como duas atividades, pois é feita em dupla.
+                    </span>
                   </span>
-                </div>
-                <div className={`toggle ${friendlyMode ? "toggle-on" : ""}`}>
-                  <div className="toggle-knob" />
-                </div>
+                </span>
               </div>
-            </div>
+
+              <fieldset className="option-group" disabled={isAnySpinning}>
+                <legend>Participantes</legend>
+                {PARTICIPANTS.map(({ id, name }) => (
+                  <label className="option-item" key={id}>
+                    <input
+                      type="checkbox"
+                      checked={settings.participantIds.includes(id)}
+                      onChange={() => toggleSetting("participantIds", id)}
+                    />
+                    <span>{name}</span>
+                  </label>
+                ))}
+              </fieldset>
+
+              <fieldset className="option-group" disabled={isAnySpinning}>
+                <legend>Modalidades</legend>
+                {MODALITIES.map(({ id, name }) => (
+                  <label className="option-item" key={id}>
+                    <input
+                      type="checkbox"
+                      checked={settings.modalityIds.includes(id)}
+                      onChange={() => toggleSetting("modalityIds", id)}
+                    />
+                    <span>{name}</span>
+                  </label>
+                ))}
+              </fieldset>
+
+              {configurationMessage && (
+                <p className="customize-warning">{configurationMessage}</p>
+              )}
+            </section>
           )}
         </div>
       </div>
@@ -467,7 +738,6 @@ export default function Home() {
           align-items: stretch;
           width: 100%;
           max-width: 820px;
-          height: ${REEL_HEIGHT}px;
         }
 
         /* ─── Names column ───────────────────────────── */
@@ -860,187 +1130,186 @@ export default function Home() {
           color: rgba(79, 195, 247, 0.55);
           letter-spacing: 0.1em;
           text-transform: uppercase;
+          max-width: min(620px, calc(100vw - 48px));
+          text-align: center;
+          line-height: 1.45;
         }
 
-        /* ─── Three-dots menu anchor ─────────────────── */
-        .menu-anchor {
+        /* ─── Customization menu ────────────────────── */
+        .customize-anchor {
           position: fixed;
           top: 22px;
           right: 24px;
           z-index: 200;
         }
-
-        /* Dots button */
-        .dots-btn {
-          width: 38px;
-          height: 38px;
-          border-radius: 50%;
-          border: 1px solid rgba(79, 195, 247, 0.22);
-          background: rgba(10, 16, 32, 0.82);
-          backdrop-filter: blur(10px);
-          -webkit-backdrop-filter: blur(10px);
+        .customize-btn {
+          min-height: 38px;
+          padding: 0 15px;
+          border: 1px solid rgba(79, 195, 247, 0.3);
+          border-radius: 9px;
+          background: rgba(10, 16, 32, 0.88);
+          color: #bfe9ff;
+          font-family: "Orbitron", sans-serif;
+          font-size: 0.62rem;
+          font-weight: 700;
+          letter-spacing: 0.1em;
+          text-transform: uppercase;
           cursor: pointer;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          justify-content: center;
-          gap: 3.5px;
           transition:
             border-color 0.2s,
             box-shadow 0.2s,
             background 0.2s;
-          position: relative;
         }
-        .dots-btn:hover {
-          border-color: rgba(79, 195, 247, 0.55);
-          box-shadow: 0 0 14px rgba(79, 195, 247, 0.25);
-          background: rgba(14, 22, 44, 0.92);
+        .customize-btn:hover,
+        .customize-btn-open {
+          border-color: #4fc3f7;
+          background: rgba(14, 28, 52, 0.96);
+          box-shadow: 0 0 16px rgba(79, 195, 247, 0.3);
         }
-        .dots-open {
-          border-color: #4fc3f7 !important;
-          box-shadow: 0 0 18px rgba(79, 195, 247, 0.4) !important;
-        }
-        .dot {
-          display: block;
-          width: 4px;
-          height: 4px;
-          border-radius: 50%;
-          background: #4fc3f7;
-          opacity: 0.75;
-          transition: opacity 0.2s;
-        }
-        .dots-btn:hover .dot,
-        .dots-open .dot {
-          opacity: 1;
-        }
-
-        /* Green badge when FFM is active */
-        .ffm-badge {
-          position: absolute;
-          top: 4px;
-          right: 4px;
-          width: 8px;
-          height: 8px;
-          border-radius: 50%;
-          background: #34d399;
-          border: 1.5px solid rgba(10, 16, 32, 0.9);
-          box-shadow: 0 0 6px rgba(52, 211, 153, 0.85);
-        }
-
-        /* ─── Dropdown panel ─────────────────────────── */
-        .menu-panel {
+        .customize-panel {
           position: absolute;
           top: calc(100% + 10px);
           right: 0;
-          width: 310px;
-          background: rgba(9, 16, 32, 0.97);
-          backdrop-filter: blur(14px);
-          -webkit-backdrop-filter: blur(14px);
-          border: 1px solid rgba(79, 195, 247, 0.18);
+          width: min(330px, calc(100vw - 32px));
+          max-height: calc(100vh - 82px);
+          overflow-y: auto;
+          padding: 16px;
+          border: 1px solid rgba(79, 195, 247, 0.2);
           border-radius: 14px;
-          padding: 6px;
+          background: rgba(9, 16, 32, 0.98);
           box-shadow:
             0 16px 48px rgba(0, 0, 0, 0.65),
             0 0 0 1px rgba(79, 195, 247, 0.05);
-          animation: menuIn 0.18s cubic-bezier(0.34, 1.36, 0.64, 1) forwards;
-          transform-origin: top right;
+          backdrop-filter: blur(14px);
+          -webkit-backdrop-filter: blur(14px);
         }
-        @keyframes menuIn {
-          from {
-            opacity: 0;
-            transform: scale(0.92) translateY(-6px);
-          }
-          to {
-            opacity: 1;
-            transform: scale(1) translateY(0);
-          }
-        }
-
-        .menu-section-label {
-          font-family: "Orbitron", sans-serif;
-          font-size: 0.6rem;
-          font-weight: 700;
-          letter-spacing: 0.18em;
-          text-transform: uppercase;
-          color: rgba(79, 195, 247, 0.4);
-          padding: 8px 14px 4px;
-        }
-
-        .menu-item {
-          display: flex;
-          align-items: center;
-          gap: 14px;
-          padding: 12px 14px;
-          border-radius: 10px;
-          cursor: pointer;
-          transition: background 0.18s;
-        }
-        .menu-item:hover {
-          background: rgba(79, 195, 247, 0.07);
-        }
-
-        .menu-item-info {
+        .customize-heading {
           display: flex;
           flex-direction: column;
-          gap: 5px;
-          flex: 1;
-          min-width: 0;
+          gap: 4px;
+          margin-bottom: 15px;
         }
-        .menu-item-title {
-          font-family: "Exo 2", sans-serif;
-          font-weight: 700;
-          font-size: 0.88rem;
+        .customize-heading p,
+        .option-group legend {
           color: #d0e8ff;
-          letter-spacing: 0.02em;
+          font-family: "Orbitron", sans-serif;
+          font-size: 0.68rem;
+          font-weight: 700;
+          letter-spacing: 0.1em;
+          text-transform: uppercase;
         }
-        .menu-item-desc {
-          font-family: "Exo 2", sans-serif;
-          font-size: 0.7rem;
-          color: rgba(130, 170, 200, 0.6);
-          line-height: 1.45;
-          white-space: normal;
+        .customize-heading span {
+          color: rgba(130, 170, 200, 0.75);
+          font-size: 0.75rem;
         }
-
-        /* ─── Toggle switch ──────────────────────────── */
-        .toggle {
-          width: 46px;
-          height: 26px;
-          border-radius: 13px;
-          background: rgba(79, 195, 247, 0.1);
-          border: 1px solid rgba(79, 195, 247, 0.18);
+        .activity-info {
           position: relative;
-          flex-shrink: 0;
-          transition:
-            background 0.3s,
-            border-color 0.3s,
-            box-shadow 0.3s;
+          display: inline-flex;
+          margin-left: 6px;
+          vertical-align: middle;
         }
-        .toggle-on {
-          background: rgba(52, 211, 153, 0.2);
-          border-color: #34d399;
-          box-shadow:
-            0 0 10px rgba(52, 211, 153, 0.45),
-            0 0 22px rgba(52, 211, 153, 0.2),
-            inset 0 0 8px rgba(52, 211, 153, 0.1);
-        }
-        .toggle-knob {
-          position: absolute;
-          top: 4px;
-          left: 4px;
+        .info-icon {
+          display: inline-grid;
           width: 16px;
           height: 16px;
+          place-items: center;
+          padding: 0;
+          border: 1px solid rgba(79, 195, 247, 0.55);
           border-radius: 50%;
-          background: rgba(79, 195, 247, 0.45);
+          background: rgba(79, 195, 247, 0.08);
+          color: #8bdcff;
+          cursor: help;
+          font-family: Georgia, serif;
+          font-size: 0.72rem;
+          font-style: italic;
+          font-weight: 700;
+          line-height: 1;
+        }
+        .activity-info:hover .info-icon {
+          border-color: #4fc3f7;
+          background: rgba(79, 195, 247, 0.2);
+          box-shadow: 0 0 8px rgba(79, 195, 247, 0.35);
+        }
+        .activity-tooltip {
+          position: absolute;
+          top: calc(100% + 8px);
+          right: 0;
+          z-index: 10;
+          width: 250px;
+          padding: 9px 10px;
+          border: 1px solid rgba(79, 195, 247, 0.25);
+          border-radius: 8px;
+          background: #101d33;
+          box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45);
+          color: #d5edfb;
+          font-size: 0.74rem;
+          line-height: 1.4;
+          opacity: 0;
+          pointer-events: none;
+          transform: translateY(-3px);
           transition:
-            transform 0.28s cubic-bezier(0.34, 1.4, 0.64, 1),
-            background 0.28s,
-            box-shadow 0.28s;
+            opacity 0.16s ease,
+            transform 0.16s ease;
         }
-        .toggle-on .toggle-knob {
-          transform: translateX(20px);
-          background: #34d399;
-          box-shadow: 0 0 10px rgba(52, 211, 153, 0.8);
+        .activity-info:hover .activity-tooltip {
+          opacity: 1;
+          pointer-events: auto;
+          transform: translateY(0);
         }
+        .option-group {
+          display: grid;
+          gap: 3px;
+          min-width: 0;
+          margin: 0;
+          padding: 0;
+          border: 0;
+        }
+        .option-group + .option-group {
+          margin-top: 15px;
+        }
+        .option-group legend {
+          margin-bottom: 6px;
+          color: rgba(79, 195, 247, 0.7);
+          font-size: 0.58rem;
+        }
+        .option-item {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          min-height: 31px;
+          padding: 5px 8px;
+          border-radius: 7px;
+          color: #c8e3f8;
+          cursor: pointer;
+          font-size: 0.9rem;
+          transition: background 0.18s;
+        }
+        .option-item:hover {
+          background: rgba(79, 195, 247, 0.08);
+        }
+        .option-item input {
+          width: 16px;
+          height: 16px;
+          accent-color: #4fc3f7;
+          cursor: pointer;
+        }
+        .option-group:disabled .option-item,
+        .option-group:disabled .option-item input {
+          cursor: not-allowed;
+          opacity: 0.55;
+        }
+        .customize-warning {
+          margin-top: 15px;
+          padding: 9px 10px;
+          border-radius: 8px;
+          font-size: 0.75rem;
+          line-height: 1.4;
+        }
+        .customize-warning {
+          background: rgba(255, 186, 0, 0.09);
+          color: #ffd56a;
+        }
+
       `}</style>
     </>
   );
