@@ -20,7 +20,6 @@ const MODALITIES = [
   { id: "vocabulario", name: "Vocabulário", activities: ["Vocabulário"] },
   { id: "gramatica", name: "Gramática", activities: ["Gramática"] },
 ];
-const SLOT_HEIGHT = 80;
 const SESSION_KEY = "activity-assignments";
 const SETTINGS_KEY = "activity-customization";
 
@@ -203,6 +202,9 @@ export default function Home() {
   const [spinningSlots, setSpinningSlots] = useState(
     Array(PARTICIPANTS.length).fill(false)
   );
+  const [slowingSlots, setSlowingSlots] = useState(
+    Array(PARTICIPANTS.length).fill(false)
+  );
   const [buttonPressed, setButtonPressed] = useState(false);
   const [clearPressed, setClearPressed] = useState(false);
   const [customizeOpen, setCustomizeOpen] = useState(false);
@@ -234,6 +236,7 @@ export default function Home() {
         : Array(participantCount).fill(false)
     );
     setSpinningSlots(Array(participantCount).fill(false));
+    setSlowingSlots(Array(participantCount).fill(false));
     spinningSlotsRef.current = Array(participantCount).fill(false);
   }, []);
 
@@ -283,6 +286,7 @@ export default function Home() {
     setDisplayedText(emptySlots(participantCount));
     setSettledSlots(Array(participantCount).fill(false));
     setSpinningSlots(Array(participantCount).fill(false));
+    setSlowingSlots(Array(participantCount).fill(false));
   };
 
   const toggleSetting = (settingKey, id) => {
@@ -319,39 +323,25 @@ export default function Home() {
 
     spinningSlotsRef.current = allSpinning;
     setSpinningSlots(allSpinning);
+    setSlowingSlots(Array(activeParticipants.length).fill(false));
     setSettledSlots(Array(activeParticipants.length).fill(false));
-    setDisplayedText(shuffle(result));
+    setDisplayedText(emptySlots(activeParticipants.length));
 
     intervalsRef.current.forEach(clearInterval);
     intervalsRef.current = [];
     timeoutsRef.current.forEach(clearTimeout);
     timeoutsRef.current = [];
 
-    const interval = setInterval(() => {
-      const spinningIndexes = spinningSlotsRef.current
-        .map((isSpinning, index) => (isSpinning ? index : null))
-        .filter((index) => index !== null);
-
-      if (spinningIndexes.length === 0) return;
-
-      // The active rows display a shuffled set of only their remaining
-      // activities, so the screen is always a one-to-one assignment.
-      const remainingActivities = shuffle(
-        spinningIndexes.map((index) => result[index])
-      );
-      setDisplayedText((prev) => {
-        const next = [...prev];
-        spinningIndexes.forEach((index, position) => {
-          next[index] = remainingActivities[position];
-        });
-        return next;
-      });
-    }, 65);
-    intervalsRef.current = [interval];
-
     result.forEach((finalActivity, i) => {
-      const stopDelay = 1200 + i * 380;
-      const timeout = setTimeout(() => {
+      const stopDelay = 1450 + i * 420;
+      const brakeTimeout = setTimeout(() => {
+        setSlowingSlots((prev) => {
+          const next = [...prev];
+          next[i] = true;
+          return next;
+        });
+      }, stopDelay - 460);
+      const stopTimeout = setTimeout(() => {
         spinningSlotsRef.current = spinningSlotsRef.current.map(
           (isSpinning, index) => (index === i ? false : isSpinning)
         );
@@ -361,6 +351,11 @@ export default function Home() {
           return next;
         });
         setSpinningSlots([...spinningSlotsRef.current]);
+        setSlowingSlots((prev) => {
+          const next = [...prev];
+          next[i] = false;
+          return next;
+        });
         setSettledSlots((prev) => {
           const next = [...prev];
           next[i] = true;
@@ -368,12 +363,11 @@ export default function Home() {
         });
 
         if (!spinningSlotsRef.current.some(Boolean)) {
-          clearInterval(interval);
           intervalsRef.current = [];
           isSpinningRef.current = false;
         }
       }, stopDelay);
-      timeoutsRef.current[i] = timeout;
+      timeoutsRef.current.push(brakeTimeout, stopTimeout);
     });
   };
 
@@ -426,92 +420,60 @@ export default function Home() {
           <div className="title-rule" />
         </header>
 
-        {/* ── Main layout ── */}
         <main
-          className="layout"
+          className={`slot-machine ${isAnySpinning ? "machine-running" : ""}`}
           aria-busy={isAnySpinning}
-          style={{
-            height: `${Math.max(activeParticipants.length, 1) * SLOT_HEIGHT}px`,
-          }}
         >
-          {/* Left: Names */}
-          <div className="names-col">
-            {activeParticipants.map(({ id, name }, i) => (
-              <div
-                key={id}
-                className={[
-                  "name-card",
-                  spinningSlots[i] ? "name-spinning" : "",
-                  settledSlots[i] ? "name-settled" : "",
-                ].join(" ")}
-              >
-                <span className="name-dot" />
-                <span className="name-text">{name}</span>
-              </div>
-            ))}
+          <div className="machine-marquee" aria-hidden="true">
+            <span className="marquee-bulb" />
+            <span>Distribuidor</span>
+            <span className="marquee-bulb" />
           </div>
 
-          {/* Middle: Arrow connectors */}
-          <div className="connectors">
-            {activeParticipants.map(({ id }, i) => (
-              <div key={id} className="conn-row">
-                <div
-                  className={`conn-line ${settledSlots[i] ? "conn-lit" : ""}`}
-                />
-                <svg
-                  width="9"
-                  height="14"
-                  viewBox="0 0 9 14"
-                  fill="none"
-                  className={`conn-arrow ${settledSlots[i] ? "conn-arrow-lit" : ""}`}
-                >
-                  <path d="M0 0L9 7L0 14" fill="currentColor" />
-                </svg>
-              </div>
-            ))}
-          </div>
-
-          {/* Right: Slot-machine reel */}
-          <div className="reel-wrapper">
-            <div className="screw tl" />
-            <div className="screw tr" />
-            <div className="screw bl" />
-            <div className="screw br" />
-
-            <div className="reel-frame">
-              {/* Atmosphere overlays */}
-              <div className="shade shade-top" />
-              <div className="shade shade-bot" />
-              <div className="scanlines" />
-
-              {activeParticipants.map(({ id }, i) => (
-                <div
+          <section className="machine-screen" aria-label="Resultado do sorteio">
+            <div className="screen-reflection" aria-hidden="true" />
+            <div className="reel-grid">
+              {activeParticipants.map(({ id, name }, i) => (
+                <article
                   key={id}
                   className={[
-                    "reel-slot",
-                    i > 0 ? "slot-sep" : "",
-                    spinningSlots[i] ? "slot-spinning" : "",
-                    settledSlots[i] ? "slot-settled" : "",
+                    "assignment-reel",
+                    spinningSlots[i] ? "reel-spinning" : "",
+                    slowingSlots[i] ? "reel-slowing" : "",
+                    settledSlots[i] ? "reel-settled" : "",
                   ].join(" ")}
                 >
-                  <span
-                    className={[
-                      "slot-text",
-                      spinningSlots[i] ? "text-spinning" : "",
-                      settledSlots[i] ? "text-settled" : "",
-                    ].join(" ")}
-                  >
-                    {displayedText[i]}
-                  </span>
-                </div>
+                  <header className="reel-name">
+                    <span className="reel-indicator" aria-hidden="true" />
+                    {name}
+                  </header>
+                  <div className="reel-window">
+                    {spinningSlots[i] ? (
+                      <div className="reel-mask" aria-hidden="true">
+                        <div
+                          className="reel-tape"
+                          style={{ "--reel-speed": `${0.38 + (i % 3) * 0.06}s` }}
+                        >
+                          {[...activeActivities, ...activeActivities, ...activeActivities].map(
+                            (activity, symbolIndex) => (
+                              <span className="reel-symbol" key={`${activity}-${symbolIndex}`}>
+                                {activity}
+                              </span>
+                            )
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <span className="result-symbol">{displayedText[i]}</span>
+                    )}
+                  </div>
+                </article>
               ))}
             </div>
-          </div>
-        </main>
+          </section>
 
-        {/* ── Buttons ── */}
-        <div className="btn-area">
-          <div className="btn-row">
+          <div className="machine-controls">
+            <div className="control-buttons">
             <button
               type="button"
               className={[
@@ -545,17 +507,19 @@ export default function Home() {
             >
               Limpar
             </button>
+            </div>
+            <p className="hint" role="status">
+              {configurationMessage
+                ? configurationMessage
+                : isAnySpinning
+                ? "Sorteando…"
+                : hasCompletedDraw
+                  ? "Sorteio concluído."
+                  : "Clique em Sortear para começar."}
+            </p>
+            <div className="coin-slot" aria-hidden="true" />
           </div>
-          <p className="hint" role="status">
-            {configurationMessage
-              ? configurationMessage
-              : isAnySpinning
-              ? "Sorteando…"
-              : hasCompletedDraw
-                ? "Sorteio concluído."
-                : "Clique em Sortear para começar."}
-          </p>
-        </div>
+        </main>
 
         <div className="customize-anchor" ref={customizeRef}>
           <button
@@ -1309,6 +1273,64 @@ export default function Home() {
           background: rgba(255, 186, 0, 0.09);
           color: #ffd56a;
         }
+
+        @keyframes tapeRoll { to { transform: translateY(-33.333%); } }
+        @keyframes bulbPulse { 50% { opacity: 1; box-shadow: 0 0 13px 3px #6fd9fa; } }
+        @keyframes reelSettle { 0% { transform: translateY(-3px); filter: brightness(1.5); } 100% { transform: translateY(0); } }
+
+        .slot-machine {
+          width: 100%; max-width: 860px; position: relative; padding: 12px;
+          border: 1px solid rgba(111,217,250,.43); border-radius: 26px;
+          background: linear-gradient(125deg,rgba(85,169,210,.28),transparent 18%),linear-gradient(155deg,#173750,#0a1726 47%,#102a3d);
+          box-shadow: 0 2px 0 rgba(183,236,255,.17) inset,0 -18px 25px rgba(0,0,0,.24) inset,0 23px 45px rgba(0,0,0,.42),0 0 36px rgba(79,195,247,.13);
+        }
+        .slot-machine::before { content:""; position:absolute; inset:5px; border:1px solid rgba(196,241,255,.09); border-radius:21px; pointer-events:none; }
+        .machine-marquee {
+          height:58px; position:relative; z-index:1; display:flex; align-items:center; justify-content:center; gap:20px; margin-bottom:10px;
+          border:1px solid rgba(111,217,250,.43); border-radius:15px; background:linear-gradient(180deg,rgba(119,207,244,.18),transparent 42%),#091522;
+          box-shadow:inset 0 2px 12px rgba(0,0,0,.72),0 1px 0 rgba(207,244,255,.14); color:#c8f2ff; font-family:"Orbitron",sans-serif; font-size:clamp(.76rem,1.7vw,.95rem); font-weight:900; letter-spacing:.28em; text-shadow:0 0 16px rgba(111,217,250,.82); text-transform:uppercase;
+        }
+        .marquee-bulb { width:8px; height:8px; border:1px solid #c8f2ff; border-radius:50%; background:#6fd9fa; box-shadow:0 0 8px rgba(111,217,250,.72); }
+        .machine-running .marquee-bulb { animation:bulbPulse .62s ease-in-out infinite; }
+        .machine-running .marquee-bulb:last-child { animation-delay:.31s; }
+        .machine-screen {
+          position:relative; z-index:1; overflow:hidden; padding:16px; border:4px solid transparent; border-radius:18px;
+          background:linear-gradient(#07111d,#0a1725) padding-box,linear-gradient(135deg,#508eb0,#162e43 36%,#6ca7c3 52%,#10263a 74%,#467f9e) border-box;
+          box-shadow:0 0 0 2px rgba(0,0,0,.52),0 12px 20px rgba(0,0,0,.27) inset,0 0 30px rgba(79,195,247,.1);
+        }
+        .screen-reflection { position:absolute; z-index:0; top:-85%; left:-35%; width:62%; height:170%; transform:rotate(23deg); background:linear-gradient(90deg,transparent,rgba(186,239,255,.055),transparent); pointer-events:none; }
+        .reel-grid { position:relative; z-index:1; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+        .assignment-reel {
+          min-width:0; padding:4px; border:1px solid rgba(121,195,225,.28); border-radius:11px; background:linear-gradient(145deg,#1c405a,#0c1c2b 34%,#143149);
+          box-shadow:0 1px 0 rgba(218,248,255,.14) inset,0 -3px 7px rgba(0,0,0,.42) inset,0 4px 8px rgba(0,0,0,.3); transition:border-color .3s,box-shadow .3s;
+        }
+        .reel-spinning { border-color:rgba(111,217,250,.72); box-shadow:0 1px 0 rgba(218,248,255,.2) inset,0 0 15px rgba(79,195,247,.19),0 4px 8px rgba(0,0,0,.3); }
+        .reel-settled { border-color:rgba(255,210,93,.68); box-shadow:0 1px 0 rgba(255,244,190,.2) inset,0 0 16px rgba(255,190,52,.15),0 4px 8px rgba(0,0,0,.3); }
+        .reel-name { display:flex; align-items:center; gap:7px; height:28px; padding:0 7px; overflow:hidden; color:#b9dbeb; font-size:.72rem; font-weight:700; letter-spacing:.07em; text-overflow:ellipsis; text-transform:uppercase; white-space:nowrap; }
+        .reel-indicator { width:6px; height:6px; flex:0 0 auto; border-radius:50%; background:#477891; }
+        .reel-spinning .reel-indicator { background:#6fd9fa; box-shadow:0 0 8px #6fd9fa; }
+        .reel-settled .reel-indicator { background:#ffd45d; box-shadow:0 0 8px #ffd45d; }
+        .reel-window { position:relative; height:74px; overflow:hidden; display:flex; align-items:center; justify-content:center; border:1px solid #07111b; border-radius:7px; background:linear-gradient(90deg,rgba(0,0,0,.34),transparent 17%,transparent 83%,rgba(0,0,0,.34)),linear-gradient(180deg,#07101a,#10263a 48%,#07101a); box-shadow:0 2px 8px rgba(0,0,0,.65) inset,0 1px 0 rgba(215,247,255,.07); }
+        .reel-mask { position:absolute; inset:0; overflow:hidden; -webkit-mask-image:linear-gradient(to bottom,transparent,#000 30%,#000 70%,transparent); mask-image:linear-gradient(to bottom,transparent,#000 30%,#000 70%,transparent); }
+        .reel-tape { display:flex; width:100%; flex-direction:column; animation:tapeRoll var(--reel-speed) linear infinite; will-change:transform; }
+        .reel-slowing .reel-tape { animation-duration:1.1s; }
+        .reel-symbol,.result-symbol { display:block; width:100%; overflow:hidden; font-family:"Orbitron",sans-serif; font-size:clamp(.61rem,1.22vw,.8rem); font-weight:700; letter-spacing:.035em; text-align:center; text-overflow:ellipsis; white-space:nowrap; }
+        .reel-symbol { height:30px; flex:0 0 30px; color:#79ddfa; line-height:30px; text-shadow:0 0 10px rgba(79,195,247,.7); }
+        .result-symbol { position:relative; z-index:1; padding:0 8px; color:rgba(184,220,235,.38); line-height:1.35; }
+        .reel-settled .result-symbol { color:#ffda6b; text-shadow:0 0 14px rgba(255,197,54,.78); animation:reelSettle .4s ease-out both; }
+        .machine-controls { position:relative; z-index:1; display:flex; flex-direction:column; align-items:center; gap:10px; min-height:125px; margin-top:10px; padding:15px 76px 13px; border:1px solid rgba(115,191,222,.32); border-radius:15px; background:linear-gradient(180deg,rgba(152,222,247,.14),transparent 28%),linear-gradient(145deg,#1a4059,#0b1b2b 62%,#123149); box-shadow:0 10px 18px rgba(0,0,0,.24) inset,0 1px 0 rgba(224,250,255,.13); }
+        .machine-controls::before,.machine-controls::after { content:""; position:absolute; top:22px; width:18px; height:18px; border:2px solid #203d52; border-radius:50%; background:radial-gradient(circle at 35% 35%,#7390a2,#1b2b3b 64%); box-shadow:0 1px 1px rgba(255,255,255,.15) inset; }
+        .machine-controls::before { left:23px; } .machine-controls::after { right:23px; }
+        .control-buttons { display:flex; align-items:flex-end; justify-content:center; gap:13px; }
+        .machine-controls .go-btn,.machine-controls .clear-btn { height:48px; border:1px solid transparent; border-radius:10px; box-shadow:none; font-size:.78rem; letter-spacing:.12em; text-transform:uppercase; }
+        .machine-controls .go-btn { width:154px; color:#191204; background:linear-gradient(180deg,#ffe490,#ffc43d 54%,#d88d17); border-color:#ffe09a; box-shadow:0 4px 0 #80500d,0 7px 13px rgba(0,0,0,.32); }
+        .machine-controls .clear-btn { width:106px; color:#d9f4ff; background:linear-gradient(180deg,#3e91b7,#20536f); border-color:#68bee1; box-shadow:0 4px 0 #0a2639,0 7px 13px rgba(0,0,0,.28); }
+        .machine-controls .btn-pressed { transform:translateY(4px)!important; box-shadow:0 1px 0 rgba(0,0,0,.55)!important; }
+        .machine-controls .hint { max-width:100%; color:rgba(185,226,241,.68); font-size:.66rem; letter-spacing:.12em; }
+        .coin-slot { position:absolute; right:24px; bottom:19px; width:27px; height:8px; border:1px solid rgba(190,234,250,.24); border-radius:6px; background:#06101a; box-shadow:0 1px 4px rgba(0,0,0,.82) inset; }
+        @media (max-width:680px) { .page { padding:82px 14px 34px; gap:26px; } .header { gap:9px; } .title-rule { min-width:10px; } .title { letter-spacing:.07em; } .slot-machine { padding:8px; border-radius:19px; } .machine-marquee { height:49px; gap:12px; margin-bottom:8px; } .machine-screen { min-height:0; padding:10px; border-radius:13px; } .reel-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; } .assignment-reel { border-radius:9px; } .reel-name { height:25px; font-size:.65rem; } .reel-window { height:66px; } .machine-controls { min-height:118px; padding:13px 54px 11px; } .machine-controls::before { left:16px; } .machine-controls::after { right:16px; } .coin-slot { right:17px; } }
+        @media (max-width:390px) { .reel-grid { grid-template-columns:1fr; } .machine-controls { padding-right:43px; padding-left:43px; } .control-buttons { gap:9px; } .machine-controls .go-btn { width:132px; } .machine-controls .clear-btn { width:92px; } }
+        @media (prefers-reduced-motion:reduce) { .reel-tape,.machine-running .marquee-bulb,.reel-settled .result-symbol { animation:none; } }
 
       `}</style>
     </>
